@@ -437,26 +437,47 @@ function toggleApi() {
   row.style.display = row.style.display === 'none' ? 'block' : 'none';
 }
 async function entrar() {
-  const pin = document.getElementById('pinInput').value.trim();
+  const pin    = document.getElementById('pinInput').value.trim();
   const apiUrl = document.getElementById('apiInput').value.trim();
-  const errEl = document.getElementById('loginError');
+  const errEl  = document.getElementById('loginError');
   errEl.style.display = 'none';
+
   if (!pin) { errEl.innerText='❌ Digite o PIN.'; errEl.style.display='block'; return; }
 
-  // Salvar configurações
-  currentPin = pin;
-  if (apiUrl) {
-    API_BASE = apiUrl.replace(/\/+$/,'');
-    localStorage.setItem('ptm_api', API_BASE);
-  } else {
-    API_BASE = localStorage.getItem('ptm_api') || window.location.origin;
+  // Determinar API_BASE (prioridade: campo > localStorage > origem atual)
+  let base = apiUrl || localStorage.getItem('ptm_api') || '';
+
+  // Se ainda vazio e estamos em https, usar a própria origem (Vercel)
+  if (!base && location.protocol === 'https:') {
+    base = location.origin;
   }
+
+  // Validar que temos uma URL real
+  if (!base || base === 'null' || !base.startsWith('http')) {
+    errEl.innerText = '❌ Cole a URL da Vercel no campo de configuração (⚙️).';
+    errEl.style.display = 'block';
+    // Mostrar campo de URL automaticamente
+    document.getElementById('apiRow').style.display = 'block';
+    return;
+  }
+
+  currentPin = pin;
+  API_BASE   = base.replace(/\/+$/, '');
+  localStorage.setItem('ptm_api', API_BASE);
   localStorage.setItem('ptm_mod', currentMod);
 
   // Testar PIN com uma chamada real
-  const res = await api('GET','getActiveCases');
-  if (res.error && res.error.includes('PIN')) {
-    errEl.innerText = '❌ PIN incorreto. Tente novamente.';
+  const btn = document.querySelector('.btn-login');
+  btn.innerText = 'Verificando...'; btn.disabled = true;
+  const res = await api('GET', 'getActiveCases');
+  btn.innerText = 'ENTRAR NO SISTEMA →'; btn.disabled = false;
+
+  if (res.error) {
+    if (res.error.includes('PIN') || res.error.includes('401')) {
+      errEl.innerText = '❌ PIN incorreto. Tente novamente.';
+    } else {
+      errEl.innerText = '❌ Erro: ' + res.error;
+    }
     errEl.style.display = 'block';
     return;
   }
@@ -481,29 +502,42 @@ function showView(name) {
 // ── API BRIDGE ─────────────────────────────────
 async function api(method, action, payload) {
   try {
-    const url = `${API_BASE}/api/ptm`;
-    const headers = {
-      'Content-Type':'application/json',
+    // Garantir URL válida antes de qualquer fetch
+    if (!API_BASE || API_BASE === 'null' || !API_BASE.startsWith('http')) {
+      return { error: 'URL da API não configurada. Volte ao login e cole a URL da Vercel.' };
+    }
+
+    const endpoint = `${API_BASE}/api/ptm`;
+    const authHeaders = {
       'x-ptm-pin': currentPin,
       'x-ptm-module': currentMod
     };
-    let options;
-    if (method==='GET') {
-      options = { method:'GET', headers:{...headers,'Content-Type':'application/json'} };
-      const res = await fetch(`${url}?action=${action}`, options);
-      const data = await res.json();
-      document.getElementById('offline-bar').classList.remove('show');
-      return data;
+
+    let res;
+    if (method === 'GET') {
+      // GET não deve ter Content-Type
+      res = await fetch(`${endpoint}?action=${action}`, {
+        method: 'GET',
+        headers: authHeaders
+      });
     } else {
-      options = { method:'POST', headers, body: JSON.stringify(payload) };
-      const res = await fetch(url, options);
-      const data = await res.json();
-      document.getElementById('offline-bar').classList.remove('show');
-      return data;
+      res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { ...authHeaders, 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
     }
+
+    const data = await res.json();
+    document.getElementById('offline-bar').classList.remove('show');
+
+    // Tratar 401 (PIN errado)
+    if (res.status === 401) return { error: 'PIN incorreto.' };
+    return data;
+
   } catch(err) {
     document.getElementById('offline-bar').classList.add('show');
-    return { error: 'Sem conexão: '+err.message };
+    return { error: 'Sem conexão: ' + err.message };
   }
 }
 
